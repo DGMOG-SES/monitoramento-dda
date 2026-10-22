@@ -1,0 +1,8 @@
+dados/brutos/
+brutos_tableau/
+*.xlsx
+client_secret*.json
+token_sheets.json
+service_account.json
+__pycache__/
+sonda*_resposta*

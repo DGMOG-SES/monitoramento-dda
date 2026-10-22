@@ -1,0 +1,78 @@
+name: Atualizar base DDA (Tableau -> Google Sheets)
+
+on:
+  schedule:
+    # O painel do Tableau costuma ser republicado às quartas pela manhã.
+    # Checagem diária às 10h17 e 15h17 de Brasília: só extrai quando há versão nova.
+    # (Minuto quebrado de propósito: o GitHub atrasa agendamentos em hora cheia.)
+    - cron: "17 13 * * *"
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+    inputs:
+      forcar:
+        description: "Extrair mesmo sem versão nova do painel"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: atualizar-dda
+  cancel-in-progress: false
+
+jobs:
+  atualizar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+      SPREADSHEET_ID: ${{ vars.SPREADSHEET_ID || '19AbG5ogeBWFjwC1y-DWHPRMbt_7ZqmTWoYrxWiyq_XQ' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Checar se o painel foi republicado
+        id: painel
+        run: python verificar_painel.py --checar
+
+      - name: Extrair do Tableau
+        if: steps.painel.outputs.mudou == 'true' || inputs.forcar
+        run: python extrair_dda.py --csv-dir dados/abas --sem-xlsx --brutos dados/brutos -v
+
+      - name: Atualizar a planilha do Google
+        if: (steps.painel.outputs.mudou == 'true' || inputs.forcar) && (env.GOOGLE_SERVICE_ACCOUNT_JSON != '' || env.GOOGLE_TOKEN_JSON != '')
+        run: python enviar_sheets.py --pasta dados/abas
+
+      - name: Registrar versão extraída
+        if: steps.painel.outputs.mudou == 'true' || inputs.forcar
+        run: python verificar_painel.py --registrar
+
+      - name: Publicar base no repositório
+        if: steps.painel.outputs.mudou == 'true' || inputs.forcar
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A dados/abas dados/controle
+          if git diff --cached --quiet; then
+            echo "Sem mudanças na base."
+          else
+            git commit -m "Atualiza base DDA PE ($(date +%Y-%m-%d))"
+            git push
+          fi
+
+      - name: Guardar arquivos brutos do Tableau (para diagnóstico)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: brutos-tableau
+          path: dados/brutos/
+          if-no-files-found: ignore
